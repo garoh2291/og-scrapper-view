@@ -5,6 +5,7 @@ import type { OGData } from './api/og/route'
 
 const DEFAULT_URL = 'https://www.kingscross.co.uk/whats-on'
 const FETCH_TIMEOUT_MS = 25_000
+const SCREENSHOT_TIMEOUT_MS = 55_000
 
 function SafeImage({
   src,
@@ -44,40 +45,56 @@ function OGCardView({ d }: { d: OGData }) {
   )
 }
 
-function EmbedView({ d }: { d: OGData }) {
+function EmbedView({
+  url,
+  screenshotSrc,
+  loading,
+  error,
+}: {
+  url: string
+  screenshotSrc: string | null
+  loading: boolean
+  error: string
+}) {
   return (
     <div style={S.embedWrap}>
+      {/* Mock browser chrome */}
       <div style={S.embedHeader}>
         <div style={S.embedDots}>
           <div style={{ ...S.dot, background: '#ff5f57' }} />
           <div style={{ ...S.dot, background: '#febc2e' }} />
           <div style={{ ...S.dot, background: '#28c840' }} />
         </div>
-        <div style={S.embedUrl}>{d.url}</div>
+        <div style={S.embedUrl}>{url}</div>
       </div>
-      {d.canEmbed ? (
-        <iframe
-          src={d.url}
-          style={S.iframe}
-          sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-          title="Preview"
-        />
-      ) : (
-        <div style={S.embedBlocked}>
-          <span style={{ fontSize: 32 }}>🚫</span>
-          <strong>Site blocks embedding</strong>
-          <span style={{ color: 'var(--muted)', fontSize: 13 }}>
-            This site uses X-Frame-Options or CSP headers to prevent iframes.
-          </span>
-          <a
-            href={d.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ color: 'var(--accent2)', textDecoration: 'none', fontSize: 13 }}
-          >
+
+      {loading && (
+        <div style={S.embedState}>
+          <div style={S.spinner} />
+          <span>Rendering page…</span>
+          <span style={{ fontSize: 12, color: 'var(--muted)' }}>This may take up to 30s</span>
+        </div>
+      )}
+
+      {error && !loading && (
+        <div style={S.embedState}>
+          <span style={{ fontSize: 28 }}>⚠️</span>
+          <span>{error}</span>
+          <a href={url} target="_blank" rel="noopener noreferrer" style={S.openLink}>
             Open in browser →
           </a>
         </div>
+      )}
+
+      {screenshotSrc && !loading && (
+        <a href={url} target="_blank" rel="noopener noreferrer" style={{ display: 'block' }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={screenshotSrc}
+            alt="Page screenshot"
+            style={{ width: '100%', display: 'block' }}
+          />
+        </a>
       )}
     </div>
   )
@@ -86,15 +103,23 @@ function EmbedView({ d }: { d: OGData }) {
 export default function Page() {
   const [url, setUrl] = useState(DEFAULT_URL)
   const [data, setData] = useState<OGData | null>(null)
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [tab, setTab] = useState<'card' | 'embed'>('card')
+  const [ogError, setOgError] = useState('')
+  const [ogLoading, setOgLoading] = useState(false)
 
+  const [tab, setTab] = useState<'card' | 'embed'>('card')
+  const [screenshotSrc, setScreenshotSrc] = useState<string | null>(null)
+  const [screenshotLoading, setScreenshotLoading] = useState(false)
+  const [screenshotError, setScreenshotError] = useState('')
+
+  // Load OG metadata
   const load = useCallback(async (targetUrl: string) => {
     if (!targetUrl.trim()) return
-    setLoading(true)
-    setError('')
+    setOgLoading(true)
+    setOgError('')
     setData(null)
+    // Reset screenshot when URL changes
+    setScreenshotSrc(null)
+    setScreenshotError('')
 
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
@@ -104,23 +129,58 @@ export default function Page() {
         signal: controller.signal,
       })
       const json = await res.json()
-      if (json.error) setError(json.error)
+      if (json.error) setOgError(json.error)
       else setData(json)
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {
-        setError('Request timed out — the site took too long to respond.')
+        setOgError('Request timed out — the site took too long to respond.')
       } else {
-        setError('Network error — could not reach the server.')
+        setOgError('Network error — could not reach the server.')
       }
     } finally {
       clearTimeout(timer)
-      setLoading(false)
+      setOgLoading(false)
+    }
+  }, [])
+
+  // Load screenshot lazily when Embed tab is opened
+  const loadScreenshot = useCallback(async (targetUrl: string) => {
+    setScreenshotLoading(true)
+    setScreenshotError('')
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), SCREENSHOT_TIMEOUT_MS)
+
+    try {
+      const res = await fetch(`/api/screenshot?url=${encodeURIComponent(targetUrl)}`, {
+        signal: controller.signal,
+      })
+      if (!res.ok) throw new Error(`Screenshot failed (${res.status})`)
+      const blob = await res.blob()
+      setScreenshotSrc(URL.createObjectURL(blob))
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        setScreenshotError('Screenshot timed out.')
+      } else {
+        setScreenshotError(e instanceof Error ? e.message : 'Screenshot failed.')
+      }
+    } finally {
+      clearTimeout(timer)
+      setScreenshotLoading(false)
     }
   }, [])
 
   useEffect(() => {
     load(DEFAULT_URL)
   }, [load])
+
+  // When switching to embed tab, trigger screenshot if not already loaded
+  const handleTabChange = (next: 'card' | 'embed') => {
+    setTab(next)
+    if (next === 'embed' && data && !screenshotSrc && !screenshotLoading && !screenshotError) {
+      loadScreenshot(data.url)
+    }
+  }
 
   return (
     <main style={S.main}>
@@ -134,41 +194,35 @@ export default function Page() {
           placeholder="Paste a URL…"
           style={S.input}
         />
-        <button onClick={() => load(url)} style={S.btn} disabled={loading}>
-          {loading ? '…' : 'Load'}
+        <button onClick={() => load(url)} style={S.btn} disabled={ogLoading}>
+          {ogLoading ? '…' : 'Load'}
         </button>
       </div>
 
       {/* Tabs */}
       <div style={S.tabs}>
-        <button
-          onClick={() => setTab('card')}
-          style={tab === 'card' ? S.tabActive : S.tab}
-        >
+        <button onClick={() => handleTabChange('card')} style={tab === 'card' ? S.tabActive : S.tab}>
           OG Card
         </button>
-        <button
-          onClick={() => setTab('embed')}
-          style={tab === 'embed' ? S.tabActive : S.tab}
-        >
+        <button onClick={() => handleTabChange('embed')} style={tab === 'embed' ? S.tabActive : S.tab}>
           Embed
         </button>
       </div>
 
-      {/* States */}
-      {loading && (
+      {/* OG loading / error */}
+      {ogLoading && (
         <div style={S.state}>
           <div style={S.spinner} />
           Fetching…
         </div>
       )}
-      {error && !loading && (
+      {ogError && !ogLoading && (
         <div style={S.state}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>⚠️</div>
-          {error}
+          {ogError}
         </div>
       )}
-      {!data && !loading && !error && (
+      {!data && !ogLoading && !ogError && (
         <div style={S.state}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>🔗</div>
           Enter a URL to preview
@@ -176,10 +230,17 @@ export default function Page() {
       )}
 
       {/* Views */}
-      {data && !loading && (
+      {data && !ogLoading && (
         <>
           {tab === 'card' && <OGCardView d={data} />}
-          {tab === 'embed' && <EmbedView d={data} />}
+          {tab === 'embed' && (
+            <EmbedView
+              url={data.url}
+              screenshotSrc={screenshotSrc}
+              loading={screenshotLoading}
+              error={screenshotError}
+            />
+          )}
         </>
       )}
     </main>
@@ -232,11 +293,24 @@ const S: Record<string, React.CSSProperties> = {
   ogDesc: { fontSize: 13, color: 'var(--muted)', lineHeight: 1.45 },
 
   // Embed
-  embedWrap: { borderRadius: 'var(--radius)', overflow: 'hidden', border: '1.5px solid var(--border)', background: 'var(--surface)' },
-  embedHeader: { padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border)', background: 'var(--surface2)' },
+  embedWrap: {
+    borderRadius: 'var(--radius)', overflow: 'hidden',
+    border: '1.5px solid var(--border)', background: 'var(--surface)',
+  },
+  embedHeader: {
+    padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8,
+    borderBottom: '1px solid var(--border)', background: 'var(--surface2)',
+  },
   embedDots: { display: 'flex', gap: 5 },
   dot: { width: 10, height: 10, borderRadius: '50%' },
-  embedUrl: { flex: 1, background: 'var(--bg)', borderRadius: 6, padding: '4px 10px', fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  iframe: { width: '100%', height: 500, border: 'none', display: 'block' },
-  embedBlocked: { height: 200, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)', fontSize: 13, gap: 8, padding: 20, textAlign: 'center' },
+  embedUrl: {
+    flex: 1, background: 'var(--bg)', borderRadius: 6, padding: '4px 10px',
+    fontSize: 11, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+  },
+  embedState: {
+    height: 220, display: 'flex', flexDirection: 'column', alignItems: 'center',
+    justifyContent: 'center', gap: 10, padding: 24, textAlign: 'center',
+    fontSize: 13, color: 'var(--text)',
+  },
+  openLink: { color: 'var(--accent2)', textDecoration: 'none', fontSize: 13 },
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as cheerio from 'cheerio'
+import { launchBrowser, BROWSER_UA } from '@/lib/browser'
 
 export interface OGData {
   url: string
@@ -11,50 +12,19 @@ export interface OGData {
   type: string
   favicon: string
   themeColor: string
-  canEmbed: boolean
-}
-
-// Chromium release URL — pin to a stable version
-const CHROMIUM_URL =
-  'https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.tar'
-
-async function fetchWithPuppeteer(url: string): Promise<string> {
-  const chromium = (await import('@sparticuz/chromium-min')).default
-  const puppeteer = (await import('puppeteer-core')).default
-
-  const browser = await puppeteer.launch({
-    args: chromium.args,
-    executablePath: await chromium.executablePath(CHROMIUM_URL),
-    headless: true,
-  })
-
-  try {
-    const page = await browser.newPage()
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-    )
-    await page.setExtraHTTPHeaders({
-      'Accept-Language': 'en-GB,en;q=0.9',
-    })
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 })
-    return await page.content()
-  } finally {
-    await browser.close()
-  }
 }
 
 async function fetchWithAxios(url: string): Promise<string> {
   const axios = (await import('axios')).default
-  const parsedUrl = new URL(url)
+  const parsed = new URL(url)
   const res = await axios.get(url, {
     headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      'User-Agent': BROWSER_UA,
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
       'Accept-Language': 'en-GB,en;q=0.9',
       'Accept-Encoding': 'gzip, deflate, br',
       'Cache-Control': 'no-cache',
-      Referer: `${parsedUrl.protocol}//${parsedUrl.hostname}/`,
+      Referer: `${parsed.protocol}//${parsed.hostname}/`,
       'Sec-Fetch-Dest': 'document',
       'Sec-Fetch-Mode': 'navigate',
       'Sec-Fetch-Site': 'none',
@@ -66,6 +36,22 @@ async function fetchWithAxios(url: string): Promise<string> {
   return res.data
 }
 
+async function fetchWithBrowser(url: string): Promise<string> {
+  const browser = await launchBrowser()
+  try {
+    const page = await browser.newPage()
+    await page.setUserAgent(BROWSER_UA)
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-GB,en;q=0.9' })
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 })
+    return await page.content()
+  } finally {
+    await browser.close()
+  }
+}
+
+const isBotChallenge = (html: string) =>
+  /cf-browser-verification|challenge-platform|jschl[-_]answer|cf_clearance|Just a moment/i.test(html)
+
 export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams.get('url')
 
@@ -73,22 +59,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'URL is required' }, { status: 400 })
   }
 
-  // Detect Cloudflare / bot-challenge pages that return 200 but aren't real content
-  const isBotChallenge = (html: string) =>
-    /cf-browser-verification|challenge-platform|jschl[-_]answer|cf_clearance|Just a moment/i.test(html)
-
   let html: string
 
   try {
     const axiosHtml = await fetchWithAxios(url)
-    // If Cloudflare intercepted the request, escalate to real Chrome
-    if (isBotChallenge(axiosHtml)) {
-      throw new Error('bot_challenge')
-    }
+    if (isBotChallenge(axiosHtml)) throw new Error('bot_challenge')
     html = axiosHtml
   } catch {
     try {
-      html = await fetchWithPuppeteer(url)
+      html = await fetchWithBrowser(url)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch URL'
       return NextResponse.json({ error: message }, { status: 500 })
@@ -111,10 +90,15 @@ export async function GET(req: NextRequest) {
     : `${parsedUrl.protocol}//${parsedUrl.hostname}${faviconHref.startsWith('/') ? '' : '/'}${faviconHref}`
 
   const rawImage = getMeta('og:image')
-  const image = rawImage
+  const absoluteImage = rawImage
     ? rawImage.startsWith('http')
       ? rawImage
       : `${parsedUrl.protocol}//${parsedUrl.hostname}${rawImage.startsWith('/') ? '' : '/'}${rawImage}`
+    : ''
+
+  // Proxy image through our own route to bypass hotlink protection
+  const image = absoluteImage
+    ? `/api/image?url=${encodeURIComponent(absoluteImage)}`
     : ''
 
   const data: OGData = {
@@ -127,7 +111,6 @@ export async function GET(req: NextRequest) {
     type: getMeta('og:type') || 'website',
     favicon,
     themeColor: $('meta[name="theme-color"]').attr('content') || '#000000',
-    canEmbed: false,
   }
 
   return NextResponse.json(data)
