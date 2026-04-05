@@ -73,14 +73,21 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'URL is required' }, { status: 400 })
   }
 
+  // Detect Cloudflare / bot-challenge pages that return 200 but aren't real content
+  const isBotChallenge = (html: string) =>
+    /cf-browser-verification|challenge-platform|jschl[-_]answer|cf_clearance|Just a moment/i.test(html)
+
   let html: string
 
   try {
-    // Try simple fetch first (fast, works for most sites)
-    html = await fetchWithAxios(url)
+    const axiosHtml = await fetchWithAxios(url)
+    // If Cloudflare intercepted the request, escalate to real Chrome
+    if (isBotChallenge(axiosHtml)) {
+      throw new Error('bot_challenge')
+    }
+    html = axiosHtml
   } catch {
     try {
-      // Fall back to real headless Chrome (bypasses bot detection)
       html = await fetchWithPuppeteer(url)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch URL'
