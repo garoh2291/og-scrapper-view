@@ -24,7 +24,6 @@ async function fetchWithPuppeteer(url: string): Promise<string> {
 
   const browser = await puppeteer.launch({
     args: chromium.args,
-    defaultViewport: chromium.defaultViewport,
     executablePath: await chromium.executablePath(CHROMIUM_URL),
     headless: true,
   })
