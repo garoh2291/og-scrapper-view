@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
 
     const buffer = await page.screenshot({ type: 'jpeg', quality: 80, fullPage: false })
 
-    return new NextResponse(buffer as Buffer, {
+    return new NextResponse(new Uint8Array(buffer), {
       headers: {
         'Content-Type': 'image/jpeg',
         'Cache-Control': 'public, max-age=300',
