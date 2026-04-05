@@ -1,0 +1,23 @@
+{
+  "name": "og-scrapper",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 8002",
+    "build": "next build",
+    "start": "next start -p 8002"
+  },
+  "dependencies": {
+    "next": "15.3.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "axios": "^1.14.0",
+    "cheerio": "^1.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "typescript": "^5"
+  }
+}
